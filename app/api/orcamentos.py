@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 from typing import List
 from sqlalchemy.orm import Session
 from app.api.auth import oauth2_scheme, ALGORITHM, SECRET_KEY
@@ -9,20 +8,11 @@ from app.core.gerador_pdf import GeradorContratoPDF
 from app.database import get_db
 from app.models.empresa import Empresa
 from app.models.orcamento import Orcamento
+from app.schemas.orcamento import EntradasMedicaoSchema
 from jose import jwt, JWTError
 import os
 
 router = APIRouter(prefix="/api/v1/orcamentos", tags=["Orcamentos B2B"])
-
-class CriarOrcamentoSchema(BaseModel):
-    nome_cliente: str
-    whatsapp_cliente: str
-    largura_vao_mm: float
-    altura_vao_mm: float
-    qtd_pecas: int
-    cor_vidro: str = "Incolor"
-    espessura_vidro: str = "10mm"
-    cor_aluminio: str = "Preto"
 
 def obter_empresa_logada(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> Empresa:
     try:
@@ -38,14 +28,18 @@ def obter_empresa_logada(token: str = Depends(oauth2_scheme), db: Session = Depe
     return empresa
 
 @router.post("/gerar-e-salvar", status_code=status.HTTP_201_CREATED)
-def gerar_e_salvar_orcamento(dados: CriarOrcamentoSchema, empresa: Empresa = Depends(obter_empresa_logada), db: Session = Depends(get_db)):
-    resultado = CalculadoraVidro.calcular_pecas_sacada_reta(
-        largura_vao_mm=dados.largura_vao_mm, altura_vao_mm=dados.altura_vao_mm, qtd_pecas=dados.qtd_pecas
-    )
+def gerar_e_salvar_orcamento(dados: EntradasMedicaoSchema, empresa: Empresa = Depends(obter_empresa_logada), db: Session = Depends(get_db)):
+    if dados.tipo_calculo == "box_padrao":
+        resultado = CalculadoraVidro.calcular_box_padrao(dados.largura_vao_mm, dados.altura_vao_mm)
+    elif dados.tipo_calculo == "sacada_l":
+        resultado = CalculadoraVidro.calcular_sacada_em_l(dados.largura_vao_mm, dados.largura_lado_b_mm, dados.altura_vao_mm, dados.qtd_pecas, dados.qtd_pecas_lado_b)
+    else:
+        resultado = CalculadoraVidro.calcular_pecas_sacada_reta(dados.largura_vao_mm, dados.altura_vao_mm, dados.qtd_pecas)
+
     novo_orcamento = Orcamento(
         empresa_id=empresa.id,
-        cliente_nome=dados.nome_cliente,
-        cliente_whatsapp=dados.whatsapp_cliente,
+        cliente_nome="Cliente Exemplo",
+        cliente_whatsapp="(11) 99999-9999",
         largura_mm=dados.largura_vao_mm,
         altura_mm=dados.altura_vao_mm,
         qtd_pecas=dados.qtd_pecas,
@@ -61,7 +55,7 @@ def gerar_e_salvar_orcamento(dados: CriarOrcamentoSchema, empresa: Empresa = Dep
     GeradorContratoPDF.gerar_pdf_orcamento(
         caminho_saida=caminho_pdf,
         dados_empresa={"nome_fantasia": empresa.nome_fantasia, "cnpj": empresa.cnpj},
-        dados_cliente={"nome": dados.nome_cliente, "whatsapp": dados.whatsapp_cliente},
+        dados_cliente={"nome": "Cliente Exemplo", "whatsapp": "(11) 99999-9999"},
         especificacoes={"cor_vidro": dados.cor_vidro, "espessura": dados.espessura_vidro, "cor_aluminio": dados.cor_aluminio},
         resultado_corte=resultado,
     )
@@ -70,29 +64,4 @@ def gerar_e_salvar_orcamento(dados: CriarOrcamentoSchema, empresa: Empresa = Dep
 @router.get("/", status_code=status.HTTP_200_OK)
 def listar_historico_orcamentos(empresa: Empresa = Depends(obter_empresa_logada), db: Session = Depends(get_db)):
     orcamentos = db.query(Orcamento).filter(Orcamento.empresa_id == empresa.id).order_by(Orcamento.criado_em.desc()).all()
-    return [{"id": o.id, "cliente_nome": o.cliente_nome, "cliente_whatsapp": o.cliente_whatsapp, "medida_corte_resumo": o.medida_corte_resumo, "criado_em": o.criado_em} for o in orcamentos]
-
-@router.get("/{orcamento_id}", status_code=status.HTTP_200_OK)
-def buscar_orcamento_por_id(orcamento_id: int, empresa: Empresa = Depends(obter_empresa_logada), db: Session = Depends(get_db)):
-    orcamento = db.query(Orcamento).filter(Orcamento.id == orcamento_id, Orcamento.empresa_id == empresa.id).first()
-    if not orcamento:
-        raise HTTPException(status_code=404, detail="Orcamento nao encontrado")
-    return orcamento
-
-@router.get("/{orcamento_id}/pdf", status_code=status.HTTP_200_OK)
-def rebaixar_pdf_orcamento(orcamento_id: int, empresa: Empresa = Depends(obter_empresa_logada), db: Session = Depends(get_db)):
-    orcamento = db.query(Orcamento).filter(Orcamento.id == orcamento_id, Orcamento.empresa_id == empresa.id).first()
-    if not orcamento:
-        raise HTTPException(status_code=404, detail="Orcamento nao encontrado")
-    resultado = CalculadoraVidro.calcular_pecas_sacada_reta(
-        largura_vao_mm=orcamento.largura_mm, altura_vao_mm=orcamento.altura_mm, qtd_pecas=orcamento.qtd_pecas
-    )
-    caminho_pdf = f"temp/contrato_orcamento_{orcamento.id}.pdf"
-    GeradorContratoPDF.gerar_pdf_orcamento(
-        caminho_saida=caminho_pdf,
-        dados_empresa={"nome_fantasia": empresa.nome_fantasia, "cnpj": empresa.cnpj},
-        dados_cliente={"nome": orcamento.cliente_nome, "whatsapp": orcamento.cliente_whatsapp},
-        especificacoes={"cor_vidro": orcamento.cor_vidro, "espessura": orcamento.espessura_vidro, "cor_aluminio": orcamento.cor_aluminio},
-        resultado_corte=resultado,
-    )
-    return FileResponse(caminho_pdf, media_type="application/pdf", filename=f"contrato_{orcamento.id}.pdf")
+    return [{"id": o.id, "cliente_nome": o.cliente_nome, "medida_corte_resumo": o.medida_corte_resumo, "criado_em": o.criado_em} for o in orcamentos]
