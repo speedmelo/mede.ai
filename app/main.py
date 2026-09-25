@@ -1,20 +1,18 @@
 from fastapi import FastAPI
+from app.database import engine, Base
 from app.schemas.orcamento import EntradasMedicaoSchema
 from app.core.calculadora import CalculadoraVidro
+import app.models.empresa
+import app.models.usuario
+import app.models.orcamento
 
-app = FastAPI(
-    title="Mede.ai API B2B",
-    description="Plataforma SaaS de Medições Técnicas, Orçamentos 3D e Pedidos de Vidro",
-    version="1.0.0"
-)
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="Mede.ai API B2B", description="Plataforma SaaS de Medicoes Tecnicas", version="1.0.0")
 
 @app.get("/")
 def home():
-    return {
-        "status": "online",
-        "sistema": "Mede.ai B2B API",
-        "mensagem": "Servidor rodando perfeitamente!"
-    }
+    return {"status": "online", "sistema": "Mede.ai B2B API", "mensagem": "Servidor e Banco de Dados rodando!"}
 
 @app.post("/api/v1/calcular-vidro")
 def calcular_vidro(dados: EntradasMedicaoSchema):
